@@ -89,7 +89,8 @@ The rotary encoder is used as the primary input method. Rotating it allows navig
 
 The wiring of the prototype is relatively simple, with most peripherals using standard communication interfaces. The OLED display and RTC communicate using I2C, while the rotary encoder uses GPIO inputs.
 
-_(Insert wiring diagram here)_
+![Wiring diagram](images/wiring_diagram.png)
+*Wiring diagram created using Wokwi.*
 
 The ESP32-S3 CAM board does come with some limitations when choosing GPIO pins. A large portion of the pins are already used internally by the camera module and cannot be freely assigned to other peripherals. Additionally, some pins are reserved for USB communication.
 
@@ -148,7 +149,7 @@ The push button on the encoder is also connected directly to a GPIO pin. Unlike 
 
 ![Rotary encoder quadrature signal example](image-link)
 
-## Camera communication
+## Camera interface
 
 The OV2640 camera uses a parallel camera interface to transfer image data to the ESP32-S3.
 
@@ -182,11 +183,32 @@ The user interface consists of two main menus: the search menu and the add menu.
 
 The search menu is used for viewing stored accounts and generating TOTP codes. Each entry displays the associated service name, the current six-digit authentication code, and the remaining validity time. The remaining time is visualized using an updating progress bar, allowing the user to easily see when the code will refresh.
 
+```cpp
+int secondsLeft = 0;
+
+String liveCode = getCode(accounts[g_index], secondsLeft);
+
+display.printf("[%d/%d] %s\n", g_index + 1, accounts.size(), accounts[g_index].issuer);
+display.setTextSize(2);
+display.setCursor(0, 12);
+display.print(liveCode);
+
+int barWidth = map(secondsLeft, 0, 30, 0, 127);
+
+display.drawFastHLine(0, 31, barWidth, WHITE);
+```
 The add menu is used for adding new accounts to the device. Switching to this menu automatically activates the camera and starts the QR code scanning process. Once a valid TOTP setup QR code is detected and successfully decoded, the account information is stored and the user is automatically returned to the search menu.
 
 Navigation between the two menus is handled using the rotary encoder. Rotating the encoder changes the selected account, while a long button press switches between the search and add menus.
 
 The interface is implemented using a state machine, where each menu and screen is represented as a separate state. This allows user input and display updates to be handled depending on the current mode of operation.
+
+```cpp
+switch(g_menu){
+case SEARCH: searchMenu(); break;
+case ADD: addMenu(); break;
+}
+```
 
 ## QR code handling
 
@@ -194,31 +216,98 @@ The QR code scanning functionality is handled using a dedicated QR code decoding
 
 To reduce the amount of data that needs to be processed, the camera is configured to capture grayscale images at QVGA resolution. High-resolution images are unnecessary for QR code detection, and using a lower resolution reduces the number of pixels that need to be processed, improving performance and reducing processing time.
 
+```cpp
+config.pixel_format = PIXFORMAT_GRAYSCALE;
+config.frame_size = FRAMESIZE_QVGA;
+```
+
 The camera is initialized during startup using a custom configuration function. This function defines the GPIO pins used by the OV2640 camera interface, as the required pins depend on the specific ESP32-S3 CAM board being used.
 
 While the add menu is active, the software continuously searches for a QR code. Once a valid TOTP setup QR code is detected and successfully decoded, the resulting data payload is passed to the parsing and storage functions. These functions extract the required account information and securely store the generated account entry.
-
+```cpp
+void  onQrCodeTask(void  *pvParameters){
+	struct QRCodeData qrCodeData;
+	while(true){
+		if(reader.receiveQrCode(&qrCodeData, 100)){
+			if(qrCodeData.valid){
+				g_qrPayload = String((const  char*)qrCodeData.payload);
+				g_newQrDataAvailable = true;
+				reader.end();
+				qrTaskHandle = NULL;
+				vTaskDelete(NULL);
+				return;
+			}
+		}
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+	}
+}
+```
 ## Encrypted storage
 
 The account information is stored using a custom data structure containing the required information for each TOTP account. Before being written to the ESP32 filesystem using LittleFS, the data is encrypted using AES-256-GCM.
 
+```cpp
+void  saveData(){
+	String encryptedHex = encrypt(accounts);
+	File file = LittleFS.open("/accounts.bin", FILE_WRITE);
+	
+	if(!file){
+		Serial.println(" ERROR: Failed to open file for writing!");
+		return;
+	}
+	
+	file.write((uint8_t*)encryptedHex.c_str(), encryptedHex.length());
+
+	file.close();
+	accounts.size());
+}
+```
 AES (Advanced Encryption Standard) is a symmetric encryption algorithm, meaning the same key is used for both encryption and decryption. The "256" refers to the size of the encryption key, while GCM (Galois/Counter Mode) is a mode of operation that provides both data encryption and integrity verification.
 
 Using AES-GCM prevents stored authentication secrets from being directly readable and also protects against unnoticed modification of the stored data. When the encrypted data is loaded, the authentication tag is verified. If the file has been modified, the verification fails and the stored information is rejected.
 
-The encryption key used for protecting account data is stored separately in the ESP32's Non-Volatile Storage (NVS) using the Preferences library.
+```cpp
+mbedtls_gcm_context gcm;
+mbedtls_gcm_init(&gcm);
+mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, keyBytes, 256);
+mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, plainLen, iv, 12, nullptr, 0,
+						 (unsigned  char*)plainData.data(), outputBuffer.data(), 16, tag);
+mbedtls_gcm_free(&gcm);
+```
 
+The encryption key used for protecting account data is stored separately in the ESP32's Non-Volatile Storage (NVS) using the Preferences library.
 
 ## TOTP generation
 
 When a new account is added, the QR code payload is parsed to extract the required TOTP information. The label is used as the service name displayed in the user interface, while the secret key is stored and later used for generating authentication codes. Other parameters contained in the QR payload are currently ignored.
 
+```cpp
+accounts.push_back(newAccount);
+
+std::sort(accounts.begin(), accounts.end(), compareAccounts);
+
+saveData();
+```
 The device uses a TOTP library to handle the code generation process. This produces standard six-digit authentication codes that remain valid for 30 seconds, following the standard TOTP format used by common authenticator applications.
 
 Since TOTP codes are time-based, accurate timekeeping is essential. The current time is obtained from the DS3231 RTC module and is used together with the stored secret key to generate the correct authentication code.
 
 The remaining validity time of the current code is also calculated from the current timestamp. This value is used by the user interface to display the progress bar showing when the current code will expire.
 
+```cpp
+TOTP totp(rawSecret, decodedLen);
+
+DateTime now = rtc.now();
+
+long currentTimestamp = now.unixtime();
+int secondsPassed = currentTimestamp % 30;
+
+secondsLeft = 30 - secondsPassed;
+
+char* dynamicCode = totp.getCode(currentTimestamp);
+
+return  String(dynamicCode);
+```
 # Demo
 Below are videos that show the device in operation
 ## Adding a new account
