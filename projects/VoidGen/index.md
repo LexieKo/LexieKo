@@ -22,8 +22,6 @@ In this post I'll go through my experience of building a standalone hardware TOT
   - [Encrypted storage](#encrypted-storage)
   - [TOTP generation](#totp-generation)
 - [Demo](#demo)
-  - [Adding a new account](#adding-a-new-account)
-  - [Generating TOTP codes](#generating-totp-codes)
 - [Limitations & improvements](#limitations--improvements)
 - [Conclusion](#conclusion)
 ## What, why, and how?
@@ -46,6 +44,7 @@ To complete the device, I added a small collection of supporting hardware:
 
 The final result is a compact proof-of-concept hardware authenticator that demonstrates QR code scanning, encrypted local storage, offline TOTP generation, and a simple embedded user interface.
 
+![Picture of finished proof-of-concept build](images/VoidGen.jpg)
 
 # Disclaimer
 
@@ -147,7 +146,9 @@ For example, when rotating the encoder clockwise, channel A changes state before
 
 The push button on the encoder is also connected directly to a GPIO pin. Unlike the rotational input, the button only provides a simple HIGH/LOW signal and is used for selecting options and confirming input.
 
-![Rotary encoder quadrature signal example](image-link)
+![Rotary encoder quadrature signal example](https://www.dynapar.com/hs-fs/hubfs/uploadedImages/_Site_Root/technology/encoder_basics/quadrature.jpg?width=700&name=quadrature.jpg)
+
+*Credit: www.dynapar.com/knowledge/encoder-basics/encoder-output/quadrature-encoders/*
 
 ## Camera interface
 
@@ -309,13 +310,10 @@ char* dynamicCode = totp.getCode(currentTimestamp);
 return  String(dynamicCode);
 ```
 # Demo
-Below are videos that show the device in operation
-## Adding a new account
-[gif]
 
-## Generating TOTP codes
-[gif]
+The video below shows the device in action, demonstrating how the rotary encoder is used to navigate and cycle through the menus.
 
+![GIF showing the working device](images/demo.gif)
 
 
 # Limitations & improvements
